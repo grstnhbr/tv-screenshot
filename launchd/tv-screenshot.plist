@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Replace /Users/you/tv-screenshot with your checkout, then: launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/tv-screenshot.plist -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>tv-screenshot</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/you/tv-screenshot/.venv/bin/python</string>
+    <string>-u</string>
+    <string>/Users/you/tv-screenshot/tv_screenshot.py</string>
+    <string>run</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PYTHONWARNINGS</key><string>ignore</string>
+    <!-- rclone and other Homebrew tools aren't on launchd's default PATH -->
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <!-- Optional, see README:
+    <key>TV_SCREENSHOT_PLEX_URL</key><string>http://localhost:32400</string>
+    <key>TV_SCREENSHOT_PLEX_TOKEN</key><string></string>
+    <key>TV_SCREENSHOT_PHOTOS_ALBUM</key><string>Screenshots</string>
+    <key>TV_SCREENSHOT_RCLONE_DEST</key><string>remote:bucket/screenshots</string>
+    -->
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>/Users/you/Library/Logs/tv-screenshot.log</string>
+  <key>StandardErrorPath</key><string>/Users/you/Library/Logs/tv-screenshot.log</string>
+</dict>
+</plist>
