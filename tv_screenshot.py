@@ -118,7 +118,8 @@ class AppleTV:
     @staticmethod
     async def buttons(rsd):
         """Yield (button_name, is_down) for every Siri Remote button, read from backboardd's log."""
-        pids =(await OsTraceService(rsd).get_pid_list()).get("Payload", {})
+        async with OsTraceService(rsd) as trace:
+            pids = (await trace.get_pid_list()).get("Payload", {})
         backboardd = next(int(k) for k, v in pids.items() if v.get("ProcessName") == "backboardd")
         async for entry in OsTraceService(rsd).syslog(pid=backboardd, stream_flags=BUTTON_FLAGS):
             if entry.label and entry.label.category == "Button":
@@ -263,9 +264,17 @@ async def deliver_pending():
                 break
 
 
-async def take_shot():
+_delivering = asyncio.Lock()  # one delivery pass at a time, or a sidecar could be delivered twice
+
+
+async def take_shot(keep=None):
+    """Capture now, then save and deliver. `keep` resolves once the button is released;
+    False (a Siri hold, not a shutter press) discards the capture."""
     taken = datetime.now()
     png = await atv.capture()
+    if keep is not None and not await asyncio.wait_for(keep, TIMEOUT):
+        log.info("long press (Siri), capture discarded")
+        return None
     name, caption = await describe(taken)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     path, n = OUT_DIR / f"{name}.jpg", 2
@@ -275,30 +284,37 @@ async def take_shot():
     for suffix, _, _ in DESTINATIONS:
         path.with_suffix(suffix).write_text(caption)
     log.info("saved %s", path.name)
-    await deliver_pending()
+    async with _delivering:
+        await deliver_pending()
     return path
 
 
 # ---------------------------------------------------------------- triggers
 
 async def watch_remote():
-    """A short press of BUTTON takes a shot. Reconnects whenever the stream drops (e.g. the Apple TV slept)."""
-    busy = None
+    """A short press of BUTTON takes a shot. Reconnects whenever the stream drops (e.g. the Apple TV slept).
+
+    The capture starts on button-down, not release, so the frame is the one on screen when the button
+    went down; releasing after SHORT_PRESS (a Siri request) throws it away. Presses during a capture
+    are ignored, since a queued capture would land seconds late."""
     while True:
         rsd = None
         try:
             async with atv.lock:
                 await atv.ensure()
                 rsd = atv.rsd
-            pressed = None
+            pressed = keep = None
             async for button, down in atv.buttons(rsd):
                 if button != BUTTON:
                     continue
                 if down:
-                    pressed = time.monotonic()
-                elif pressed and time.monotonic() - pressed < SHORT_PRESS and not (busy and not busy.done()):
-                    busy = asyncio.create_task(_shot_from_remote())
-                    pressed = None
+                    if atv.lock.locked():
+                        log.info("press ignored: a capture is still in progress")
+                        continue
+                    pressed, keep = time.monotonic(), asyncio.get_running_loop().create_future()
+                    asyncio.create_task(_shot_from_remote(keep))
+                elif keep and not keep.done():
+                    keep.set_result(time.monotonic() - pressed < SHORT_PRESS)
         except Exception as e:
             log.warning("button stream: %r", e)
         async with atv.lock:
@@ -307,11 +323,33 @@ async def watch_remote():
         await asyncio.sleep(5)
 
 
-async def _shot_from_remote():
+async def _shot_from_remote(keep):
     try:
-        await take_shot()
+        await take_shot(keep)
     except Exception as e:
         log.error("shot failed: %r", e)
+
+
+async def _ping(rsd):
+    async with OsTraceService(rsd) as trace:
+        await trace.get_pid_list()
+
+
+async def keepalive():
+    """The tunnel can die without the button stream noticing; a press would then wait out TIMEOUT before
+    reconnecting. A cheap round trip every minute finds that first."""
+    while True:
+        await asyncio.sleep(60)
+        rsd = atv.rsd
+        if rsd is None or atv.lock.locked():
+            continue
+        try:
+            await asyncio.wait_for(_ping(rsd), 10)
+        except Exception as e:
+            log.warning("keepalive failed (%r); reconnecting", e)
+            async with atv.lock:
+                if atv.rsd is rsd:
+                    await atv.disconnect()  # also ends the button stream, which reconnects
 
 
 async def handle_http(reader, writer):
@@ -346,7 +384,7 @@ async def handle_http(reader, writer):
 
 
 async def run():
-    tasks = [asyncio.create_task(watch_remote())]
+    tasks = [asyncio.create_task(watch_remote()), asyncio.create_task(keepalive())]
     if HTTP_PORT:
         server = await asyncio.start_server(handle_http, HTTP_HOST, HTTP_PORT)
         log.info("HTTP on port %d", HTTP_PORT)
