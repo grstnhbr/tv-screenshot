@@ -187,26 +187,31 @@ def now_playing():
         title = (f"{session.get('grandparentTitle')} "
                  f"S{int(session.get('parentIndex', 0)):02d}E{int(session.get('index', 0)):02d} {title}")
     return {"title": title, "year": session.get("year"), "tmdb": _tmdb_id(item),
-            "offset": int(session.get("viewOffset", 0)) // 1000}
+            "episode": session.get("type") == "episode", "offset": int(session.get("viewOffset", 0)) // 1000}
 
 
 async def describe(taken):
-    """(file name without extension, caption) for a shot taken at `taken`."""
+    """(file name without extension, caption, upload path without extension) for a shot taken at `taken`.
+    Uploads are filed by TMDB id: <id>/01h23m45s, tv/<episode id>/01h23m45s, else unmatched/<timestamp>."""
     try:
         np = await asyncio.to_thread(now_playing)
     except Exception as e:
         log.warning("now-playing lookup failed: %r", e)
         np = None
     if not np:
-        return f"No media playing {taken:%Y-%m-%d %H.%M.%S}", f"No media playing · {taken:%Y-%m-%d %H:%M:%S}"
+        return (f"No media playing {taken:%Y-%m-%d %H.%M.%S}", f"No media playing · {taken:%Y-%m-%d %H:%M:%S}",
+                f"unmatched/{taken:%Y-%m-%d-%H%M%S}")
     h, rem = divmod(np["offset"], 3600)
     m, s = divmod(rem, 60)
     year = f" ({np['year']})" if np["year"] else ""
     tmdb = f" [tmdb-{np['tmdb']}]" if np["tmdb"] else ""
-    name = re.sub(r'[/:\\"*?<>|]+', "-", f"{np['title']}{year}{tmdb} {h:02d}h{m:02d}m{s:02d}s")
+    position = f"{h:02d}h{m:02d}m{s:02d}s"
+    name = re.sub(r'[/:\\"*?<>|]+', "-", f"{np['title']}{year}{tmdb} {position}")
     caption = " · ".join(filter(None, [f"{np['title']}{year}", f"{h}:{m:02d}:{s:02d}",
                                        np["tmdb"] and f"TMDB {np['tmdb']}", f"{taken:%Y-%m-%d %H:%M}"]))
-    return name, caption
+    if not np["tmdb"]:
+        return name, caption, f"unmatched/{taken:%Y-%m-%d-%H%M%S}"
+    return name, caption, f"{'tv/' if np['episode'] else ''}{np['tmdb']}/{position}"
 
 
 def to_jpeg(png):
@@ -242,11 +247,12 @@ async def to_photos(path, caption):
     await _run("osascript", "-", str(path), PHOTOS_ALBUM, caption, stdin=PHOTOS_SCRIPT.encode())
 
 
-async def to_rclone(path, _caption):
-    await _run("rclone", "copyto", str(path), f"{RCLONE_DEST.rstrip('/')}/{path.name}", "--immutable")
+async def to_rclone(path, remote_path):
+    await _run("rclone", "copyto", str(path), f"{RCLONE_DEST.rstrip('/')}/{remote_path}", "--immutable")
 
 
-# Each enabled destination leaves a sidecar file next to the shot until it succeeds; failures retry on the next shot.
+# Each enabled destination leaves a sidecar file next to the shot until it succeeds, holding what it needs
+# (Photos: the caption; rclone: the upload path); failures retry on the next shot.
 DESTINATIONS = [d for d in [(".photos", PHOTOS_ALBUM, to_photos), (".rclone", RCLONE_DEST, to_rclone)] if d[1]]
 
 
@@ -275,14 +281,15 @@ async def take_shot(keep=None):
     if keep is not None and not await asyncio.wait_for(keep, TIMEOUT):
         log.info("long press (Siri), capture discarded")
         return None
-    name, caption = await describe(taken)
+    name, caption, remote = await describe(taken)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    path, n = OUT_DIR / f"{name}.jpg", 2
+    path, n, dup = OUT_DIR / f"{name}.jpg", 2, ""
     while path.exists():  # never overwrite
-        path, n = OUT_DIR / f"{name} {n}.jpg", n + 1
+        path, dup, n = OUT_DIR / f"{name} {n}.jpg", f"-{n}", n + 1
     path.write_bytes(to_jpeg(png))
+    sidecars = {".photos": caption, ".rclone": f"{remote}{dup}.jpg"}
     for suffix, _, _ in DESTINATIONS:
-        path.with_suffix(suffix).write_text(caption)
+        path.with_suffix(suffix).write_text(sidecars[suffix])
     log.info("saved %s", path.name)
     async with _delivering:
         await deliver_pending()
@@ -366,7 +373,7 @@ async def handle_http(reader, writer):
         elif path in ("/snap", "/snap.png"):
             try:
                 png = await atv.capture()
-                name, _ = await describe(datetime.now())
+                name, *_ = await describe(datetime.now())
                 ext = "png" if path == "/snap.png" else "jpg"
                 status, ctype = 200, f"image/{'png' if ext == 'png' else 'jpeg'}"
                 body = png if ext == "png" else to_jpeg(png)
@@ -416,7 +423,7 @@ async def pair():
 
 async def snap_once(dest):
     png = await atv.capture()
-    name, _ = await describe(datetime.now())
+    name, *_ = await describe(datetime.now())
     path = Path(dest or f"{name}.png")
     path.write_bytes(png if path.suffix.lower() == ".png" else to_jpeg(png))
     print(path)

@@ -76,9 +76,9 @@ Environment variables (all optional):
 | `TV_SCREENSHOT_PLEX_URL` / `TV_SCREENSHOT_PLEX_TOKEN` | off | Name shots after what Plex says is playing. On a Mac running Plex, the token is `defaults read com.plexapp.plexmediaserver PlexOnlineToken` |
 | `TV_SCREENSHOT_RADARR_URL` / `TV_SCREENSHOT_RADARR_API_KEY` | off | TMDB ids for movies Plex didn't match |
 | `TV_SCREENSHOT_PHOTOS_ALBUM` | off | Import each shot into this Photos album (created if missing), with a caption |
-| `TV_SCREENSHOT_RCLONE_DEST` | off | Upload each shot with `rclone copyto ... --immutable`, e.g. `r2:my-bucket/screenshots`. Uses your rclone config (`RCLONE_CONFIG` to point at a dedicated one) |
+| `TV_SCREENSHOT_RCLONE_DEST` | off | Upload each shot with `rclone copyto ... --immutable`, e.g. `r2:my-bucket/screenshots`, filed by TMDB id: `<tmdb id>/01h23m45s.jpg` (playback position), `tv/<episode tmdb id>/...` for episodes, `unmatched/2026-10-28-213900.jpg` otherwise. Uses your rclone config (`RCLONE_CONFIG` to point at a dedicated one) |
 
-When a Photos import or upload fails, a sidecar file (`.photos` / `.rclone`) stays next to the shot and the delivery is retried after the next shot. Files are never overwritten; a repeated name gets ` 2`, ` 3`, ...
+When a Photos import or upload fails, a sidecar file (`.photos` / `.rclone`) stays next to the shot and the delivery is retried after the next shot. Files are never overwritten; a repeated name gets ` 2`, ` 3`, ... (`-2`, `-3`, ... in the upload path)
 
 ## HTTP endpoint and remote access
 
